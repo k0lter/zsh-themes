@@ -1,139 +1,174 @@
+#
+# A simple theme partially based on Sorin Ionescu theme
+#
 
-function prompt_kolter_precmd {
-    git-info
+# Authors:
+#   Sorin Ionescu <sorin.ionescu@gmail.com>
+#   Emmanuel Bouthenot <kolter@openics.org>
+
+# 16 Terminal Colors
+# -- ---------------
+#  0 black
+#  1 red
+#  2 green
+#  3 yellow
+#  4 blue
+#  5 magenta
+#  6 cyan
+#  7 white
+#  8 bright black
+#  9 bright red
+# 10 bright green
+# 11 bright yellow
+# 12 bright blue
+# 13 bright magenta
+# 14 bright cyan
+# 15 bright white
+
+
+pmodload 'helper'
+
+function prompt-pwd {
+    setopt localoptions extendedglob
+
+    local current_pwd="${PWD/#$HOME/~}"
+    local ret_directory
+
+    if [[ "$current_pwd" == (#m)[/~] ]]; then
+        ret_directory="$MATCH"
+        unset MATCH
+    elif zstyle -m ':prezto:module:prompt' pwd-length 'full'; then
+        ret_directory=${PWD}
+    elif zstyle -m ':prezto:module:prompt' pwd-length 'long'; then
+        ret_directory=${current_pwd}
+    else
+        ret_directory="${${${${(@j:/:M)${(@s:/:)current_pwd}##.#?}:h}%/}//\%/%%}/${${current_pwd:t}//\%/%%}"
+    fi
+
+    unset current_pwd
+
+    print "$ret_directory"
 }
 
-function prompt_kolter_preexec {
+function prompt_git_info {
+  # We can safely split on ':' because it isn't allowed in ref names.
+  IFS=':' read _git_target _git_post_target <<<"$3"
+
+  # The target actually contains 3 space separated possibilities, so we need to
+  # make sure we grab the first one.
+  _git_target=$(coalesce ${(@)${(z)_git_target}})
+
+  if [[ -z "$_git_target" ]]; then
+    # No git target detected, flush the git fragment and redisplay the prompt.
+    if [[ -n "$_prompt_git" ]]; then
+      _prompt_git=''
+      zle && zle reset-prompt
+    fi
+  else
+    # Git target detected, update the git fragment and redisplay the prompt.
+    _prompt_git="${_git_target}${_git_post_target}"
+    zle && zle reset-prompt
+  fi
+}
+
+function prompt_async_git {
+  cd -q "$1"
+  if (( $+functions[git-info] )); then
+    git-info
+    print ${git_info[status]}
+  fi
+}
+
+function prompt_preexec {
   if [[ -n "${TMUX}" ]] && (( $+commands[tmux] )); then
     source <(tmux show-environment | sed -r -e '/^-/d' -e 's/^([^=]+)=(.*)$/\1="\2"/')
   fi
 }
 
-function prompt_kolter_setup {
+function prompt_precmd {
   setopt LOCAL_OPTIONS
   unsetopt XTRACE KSH_ARRAYS
-  prompt_opts=(cr percent subst)
+
+  # Format PWD.
+  _prompt_pwd=$(prompt-pwd)
+
+  # Kill the old process of slow commands if it is still running.
+  async_flush_jobs async_git
+
+  # Handle updating git data. We also clear the git prompt data if we're in a
+  # different git root now.
+  if (( $+functions[git-dir] )); then
+    local new_git_root="$(git-dir 2> /dev/null)"
+    if [[ $new_git_root != $_cur_git_root ]]; then
+      _prompt_git=''
+      _cur_git_root=$new_git_root
+    fi
+  fi
+
+  # Run python info (this should be fast and not require any async)
+  if (( $+functions[python-info] )); then
+    python-info
+  fi
+
+  # Compute slow commands in the background.
+  async_job async_git prompt_async_git "$PWD"
+}
+
+function prompt_setup {
+  setopt LOCAL_OPTIONS
+  unsetopt XTRACE KSH_ARRAYS
+  prompt_opts=(cr percent sp subst)
+  _prompt_precmd_async_pid=0
+  _prompt_precmd_async_data=$(mktemp "${TMPDIR:-/tmp}/sorin-prompt-async-XXXXXXXXXX")
 
   # Load required functions.
   autoload -Uz add-zsh-hook
+  autoload -Uz async && async
 
-  # Add hook for calling vcs_info before each command.
-  add-zsh-hook precmd prompt_kolter_precmd
-  add-zsh-hook precmd prompt_kolter_preexec
+  # Add hook for calling git-info before each command.
+  add-zsh-hook precmd prompt_precmd
+  # Add hook to refresh
+  add-zsh-hook precmd prompt_preexec
 
-  # Use extended color pallete if available.
-  if [[ $TERM = *256color* || $TERM = *rxvt* ]]; then
-    _color_red="%F{196}"
-    _color_green="%F{49}"
-    _color_yellow="%F{226}"
-    _color_blue="%F{21}"
-    _color_magenta="%F{97}"
-    _color_cyan="%F{26}"
-    _color_white="%F{253}"
-    _color_brightred="%F{197}"
-    _color_brightgreen="%F{148}"
-    _color_brightyellow="%F{228}"
-    _color_brightblue="%F{39}"
-    _color_brightmagenta="%F{139}"
-    _color_brightcyan="%F{38}"
-    _color_brightwhite="%F{231}"
-    _color_reset="%f"
-  else
-    _color_red="%F{red}"
-    _color_green="%F{green}"
-    _color_yellow="%F{yellow}"
-    _color_blue="%F{blue}"
-    _color_magenta="%F{magenta}"
-    _color_cyan="%F{cyan}"
-    _color_white="%F{white}"
-    _color_brightred="%B%F{red}"
-    _color_brightgreen="%B%F{green}"
-    _color_brightyellow="%B%F{yellow}"
-    _color_brightblue="%B%F{blue}"
-    _color_brightmagenta="%B%F{magenta}"
-    _color_brightcyan="%B%F{cyan}"
-    _color_brightwhite="%B%F{white}"
-    _color_reset="%f"
-  fi
-
-  # In normal formats and actionformats the following replacements are done:
-  # %s - The VCS in use (git, hg, svn, etc.).
-  # %b - Information about the current branch.
-  # %a - An identifier that describes the action. Only makes sense in actionformats.
-  # %i - The current revision number or identifier. For hg the hgrevformat style may be used to customize the output.
-  # %c - The string from the stagedstr style if there are staged changes in the repository.
-  # %u - The string from the unstagedstr style if there are unstaged changes in the repository.
-  # %R - The base directory of the repository.
-  # %r - The repository name. If %R is /foo/bar/repoXY, %r is repoXY.
-  # %S - A subdirectory within a repository. If $PWD is /foo/bar/repoXY/beer/tasty, %S is beer/tasty.
-  #
-  # In branchformat these replacements are done:
-  # %s - The VCS in use (git, hg, svn, etc.).
-  # %b - Information about the current branch.
-  # %a - An identifier that describes the action. Only makes sense in actionformats.
-  # %i - The current revision number or identifier. For hg the hgrevformat style may be used to customize the output.
-  # %c - The string from the stagedstr style if there are staged changes in the repository.
-  # %u - The string from the unstagedstr style if there are unstaged changes in the repository.
-  # %R - The base directory of the repository.
-  # %r - The repository name. If %R is /foo/bar/repoXY, %r is repoXY.
-  # %S - A subdirectory within a repository. If $PWD is /foo/bar/repoXY/beer/tasty, %S is beer/tasty.
-
-  local branch_format="${_color_brightyellow}%b${_color_reset} %u%c"
-  local action_format="(${_color_green}%a${_color_reset})"
-  local unstaged_format="${_color_brightred}●${_color_reset}"
-  local staged_format="${_color_brightgreen}●${_color_reset}"
-
-  # Set vcs_info parameters.
-  zstyle ':vcs_info:*' enable svn git
-  # If enabled, this style causes the %c and %u format escapes to show when the
-  # working directory has uncommitted changes
-  zstyle ':vcs_info:*:prompt:*' check-for-changes true
-  # This string will be used in the %u escape if there are unstaged changes in
-  # the repository
-  zstyle ':vcs_info:*:prompt:*' unstagedstr "${unstaged_format}"
-  # This string will be used in the %c escape if there are staged changes in
-  # the repository
-  zstyle ':vcs_info:*:prompt:*' stagedstr "${staged_format}"
-  # A list of formats, used if there is a special action going on in your
-  # current repository; like an interactive rebase or a merge conflict.
-  zstyle ':vcs_info:*:prompt:*' actionformats "${branch_format}${action_format}"
-  # A list of formats, used when actionformats is not used (which is most of
-  # the time).
-  zstyle ':vcs_info:*:prompt:*' formats " ${_color_brightwhite}on ${_color_brightcyan}%s${_color_brightwhite}:${branch_format}"
-  # These "formats" are exported when we didn’t detect a version control system
-  # for the current directory or vcs_info was disabled
-  zstyle ':vcs_info:*:prompt:*' nvcsformats   ""
-
+  # Set git-info parameters.
   zstyle ':prezto:module:git:info' verbose 'yes'
-  zstyle ':prezto:module:git:info:action' format "${_color_red}! %s"
-  zstyle ':prezto:module:git:info:added' format "${_color_brightgreen}✚"
-  zstyle ':prezto:module:git:info:ahead' format "${_color_magenta}▲"
-  zstyle ':prezto:module:git:info:behind' format "${_color_brightmagenta}▼"
-  zstyle ':prezto:module:git:info:branch' format "${_color_brightyellow}%b"
-  zstyle ':prezto:module:git:info:deleted' format "${_color_brightred}✖"
-  zstyle ':prezto:module:git:info:modified' format "${_color_brightred}✱"
-  zstyle ':prezto:module:git:info:position' format "${_color_brightwhite}%p"
-  zstyle ':prezto:module:git:info:renamed' format "${_color_red}►"
-  zstyle ':prezto:module:git:info:stashed' format "${_color_magenta}s"
-  zstyle ':prezto:module:git:info:unmerged' format "${_color_red}═"
-  zstyle ':prezto:module:git:info:untracked' format "${_color_brightblack}?"
-  # More info on formats at https://github.com/sorin-ionescu/prezto/tree/master/modules/git
-  zstyle ':prezto:module:git:info:keys' format 'prompt' " ${_color_brightwhite}on ${_color_brightblue}git${_color_brightwhite}:%b %p%A%B%S%a%d%m%r%U%u"
+  zstyle ':prezto:module:git:info:action' format '%F{7}:%f%%B%F{9}%s%f%%b'
+  zstyle ':prezto:module:git:info:added' format ' %%B%F{2}✚%f%%b'
+  zstyle ':prezto:module:git:info:ahead' format ' %%B%F{13}⬆%f%%b'
+  zstyle ':prezto:module:git:info:behind' format ' %%B%F{13}⬇%f%%b'
+  zstyle ':prezto:module:git:info:branch' format ' %%B%F{11}%b%f%%b'
+  zstyle ':prezto:module:git:info:commit' format ' %%B%F{3}%.7c%f%%b'
+  zstyle ':prezto:module:git:info:deleted' format ' %%B%F{1}✖%f%%b'
+  zstyle ':prezto:module:git:info:modified' format ' %%B%F{4}✱%f%%b'
+  zstyle ':prezto:module:git:info:position' format ' %%B%F{13}%p%f%%b'
+  zstyle ':prezto:module:git:info:renamed' format ' %%B%F{5}➜%f%%b'
+  zstyle ':prezto:module:git:info:stashed' format ' %%B%F{6}✭%f%%b'
+  zstyle ':prezto:module:git:info:unmerged' format ' %%B%F{3}═%f%%b'
+  zstyle ':prezto:module:git:info:untracked' format ' %%B%F{7}◼%f%%b'
+  zstyle ':prezto:module:git:info:keys' format \
+    'status' '%b %p %c:%s%A%B%S%a%d%m%r%U%u'
+
+  # Set up non-zero return value display
+  local show_return="✘ %? "
+  # Set python-info format
+  zstyle ':prezto:module:python:info:virtualenv' format '%f%F{3}(%v)%F{7} '
+
+  # Get the async worker set up
+  async_start_worker async_git -n
+  async_register_callback async_git prompt_git_info
+  _cur_git_root=''
+
+  _prompt_git=''
+  _prompt_pwd=''
 
   # Define prompts.
-  PROMPT=' \
-%(!.%{$_color_brightred%}%n.%{$_color_brightgreen%}%n)\
-%{$_color_brightwhite%} at \
-%{$_color_brightmagenta%}%m\
-%{$_white%}\
-%{$_color_brightwhite%} in \
-%{$_color_green%}%(!.%d.%~)\
-${git_info[prompt]}\
-%1(j.%{$_color_brightwhite%} with %{$_color_green%}%j%{$_color_brightwhite%} jobs.)
-%0(?..%{$_color_red%}%?)\
-%(!.%{$_color_red%}.%{$_color_cyan%})>%{$_color_reset%}'
-  RPROMPT=''
+  PROMPT='%1(j.%F{9}%j%F{15}❫ .)${SSH_TTY:+"%F{13}%n%f%F{7}@%f%F{14}%m%f "}%F{10}${_prompt_pwd}%(!. %B%F{1}#%f%b.) %F{12}❱%F{15} '
+  RPROMPT='$python_info[virtualenv]%(?:: %F{1}'
+  RPROMPT+=${show_return}
+  RPROMPT+='%f)${_prompt_git}'
+  SPROMPT='zsh: correct %F{1}%R%f to %F{2}%r%f [nyae]? '
 }
 
-prompt_kolter_setup
+prompt_setup
 
+# vim: ft=zsh

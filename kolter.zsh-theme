@@ -28,6 +28,17 @@
 
 pmodload 'helper'
 
+function prompt_chroot_info() {
+    local chroot_info=""
+    if [[ -f '/etc/debian_chroot' ]]; then
+        chroot_info=$(</etc/debian_chroot)
+        if [[ -n "${chroot_info}" ]]; then
+            chroot_info="chroot:${chroot_info} "
+        fi
+    fi
+    print ${chroot_info}
+}
+
 function prompt-pwd {
     setopt localoptions extendedglob
 
@@ -119,7 +130,7 @@ function prompt_setup {
   unsetopt XTRACE KSH_ARRAYS
   prompt_opts=(cr percent sp subst)
   _prompt_precmd_async_pid=0
-  _prompt_precmd_async_data=$(mktemp "${TMPDIR:-/tmp}/sorin-prompt-async-XXXXXXXXXX")
+  _prompt_precmd_async_data=$(mktemp "${TMPDIR:-/tmp}/kolter-prompt-async-XXXXXXXXXX")
 
   # Load required functions.
   autoload -Uz add-zsh-hook
@@ -153,19 +164,20 @@ function prompt_setup {
   # Set python-info format
   zstyle ':prezto:module:python:info:virtualenv' format '%f%F{3}(%v)%F{7} '
 
-  # Get the async worker set up
+  # Async worker set up for git
   async_start_worker async_git -n
   async_register_callback async_git prompt_git_info
-  _cur_git_root=''
 
+  _cur_git_root=''
   _prompt_git=''
   _prompt_pwd=''
+  _prompt_chroot=$(prompt_chroot_info)
 
   # Define prompts.
   PROMPT='%1(j.%F{9}%j%F{15}❫ .)${SSH_TTY:+"%F{13}%n%f%F{7}@%f%F{14}%m%f "}%F{10}${_prompt_pwd}%(!. %B%F{1}#%f%b.) %F{12}❱%F{15} '
   RPROMPT='$python_info[virtualenv]%(?:: %F{1}'
   RPROMPT+=${show_return}
-  RPROMPT+='%f)${_prompt_git}'
+  RPROMPT+='%f)${_prompt_chroot}${_prompt_git}'
   SPROMPT='zsh: correct %F{1}%R%f to %F{2}%r%f [nyae]? '
 }
 
